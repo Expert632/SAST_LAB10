@@ -1,0 +1,42 @@
+name: Security Gate - Semgrep
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+  pull_request:
+
+jobs:
+  semgrep_gate:
+    runs-on: ubuntu-latest
+
+    steps:
+    # Étape 1 : Récupérer le code
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    # Étape 2 : Installer Python et Semgrep
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    - name: Install Semgrep
+      run: pip install semgrep
+
+    # Étape 3 : Lancer le scan Semgrep
+    - name: Run Semgrep Security Scan
+      id: semgrep
+      run: |
+        semgrep --config "p/ci" --error > semgrep_output.txt || true
+        cat semgrep_output.txt
+
+    # Étape 4 : Vérifier si des vulnérabilités critiques sont présentes
+    - name: Fail pipeline if critical vulnerabilities found
+      run: |
+        if grep -q "error" semgrep_output.txt; then
+          echo "❌ Critical vulnerabilities detected! Failing pipeline."
+          exit 1
+        else
+          echo "✅ No critical vulnerabilities found."
+        fi
