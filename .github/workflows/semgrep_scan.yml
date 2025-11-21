@@ -1,0 +1,97 @@
+# .github/workflows/semgrep-scan.yml
+name: Semgrep SAST (OSS) - Reports
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+env:
+  # Mettre à "true" si tu veux que le job RESTE vert même en cas de findings
+  # (OPTION PÉDAGOGIQUE seulement — ne pas utiliser en prod).
+  ALLOW_FAILURE: "false"
+  # Rulesets recommandés pour CI : p/ci, p/owasp-top-ten, auto, etc.
+  SEMGREP_CONFIG: "p/ci"
+
+jobs:
+  semgrep-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python (needed for semgrep)
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.x"
+
+      - name: Install semgrep and jq
+        run: |
+          python -m pip install --upgrade pip
+          pip install semgrep==1.* || pip install semgrep
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq
+
+      - name: Run Semgrep (JSON, SARIF, TXT)
+        # Nous exécutons trois sorties séparées pour garantir la compatibilité
+        run: |
+          # Scanner TOUT le repo (.) avec le config défini
+          # JSON output
+          semgrep --config "${{ env.SEMGREP_CONFIG }}" --json . > semgrep-report.json || true
+          # Text (human readable)
+          semgrep --config "${{ env.SEMGREP_CONFIG }}" --text . > semgrep-report.txt || true
+          # SARIF (useful for GitHub code scanning import or other tools)
+          semgrep --config "${{ env.SEMGREP_CONFIG }}" --sarif . > semgrep-report.sarif || true
+
+          # Safety: ensure files exist even si semgrep n'a rien renvoyé
+          for f in semgrep-report.json semgrep-report.txt semgrep-report.sarif; do
+            if [ ! -s "$f" ]; then
+              echo "{}" > "$f" || true
+            fi
+          done
+
+      - name: Summarize results and set outcome
+        id: summary
+        run: |
+          # Compter le nombre de résultats dans le JSON
+          # Semgrep JSON uses top-level "results" array
+          count=0
+          if [ -s semgrep-report.json ]; then
+            # safe parse: if no "results" key, length will be 0
+            count=$(jq '.results | length // 0' semgrep-report.json) || count=0
+          fi
+
+          echo "SEMgrep findings count: $count"
+
+          if [ "$count" -eq 0 ]; then
+            echo "No Vulnerability detected"
+            echo "::set-output name=found::false"
+          else
+            echo "Vulnerability detected: $count finding(s)"
+            echo "::set-output name=found::true"
+            echo "::set-output name=count::$count"
+          fi
+
+          # Decide exit behavior depending on ALLOW_FAILURE
+          if [ "$count" -gt 0 ] && [ "${{ env.ALLOW_FAILURE }}" != "true" ]; then
+            echo "Failing job because vulnerabilities were found and ALLOW_FAILURE is false."
+            # Exit with non-zero to make the job fail (recommended for real security gating)
+            exit 1
+          else
+            if [ "$count" -gt 0 ]; then
+              echo "ALLOW_FAILURE is true — job will remain green, but findings exist."
+            fi
+            # keep job success
+            exit 0
+          fi
+
+      - name: Upload scan reports (artifacts)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-reports
+          path: |
+            semgrep-report.json
+            semgrep-report.txt
+            semgrep-report.sarif
